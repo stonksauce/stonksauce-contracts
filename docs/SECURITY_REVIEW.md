@@ -4,6 +4,8 @@ Scope: `programs/stonksauce` (Anchor 0.31, Token-2022 aware), the keeper, the sh
 
 Every finding marked Fixed has a regression check in `scripts/localnet/e2e.ts`. Each check replays the attack against the fixed program and asserts the specific error code. The e2e output line is quoted under each finding.
 
+2026-10 update: randomness moved from Switchboard On-Demand to ORAO VRF, and `mock_switchboard` was replaced by `mock_orao`. C-2 and H-3 below describe the Switchboard integration as it was reviewed and are kept as history. What replaced each of their checks, and the current regression lines, are in "2026-10: switch to ORAO VRF".
+
 ## Summary
 
 | ID | Severity | Title | Status |
@@ -32,6 +34,7 @@ Every finding marked Fixed has a regression check in `scripts/localnet/e2e.ts`. 
 | L-6 | Low | `shard_count` trusted when slicing the directory | Fixed (hardening) |
 | L-7 | Low | Unchecked `occupied` increment | Fixed (hardening) |
 | I-1 to I-6 | Info | Economic and operational risks | Documented |
+| 2026-10 | Change | Switchboard On-Demand replaced by ORAO VRF (supersedes the C-2 and H-3 checks) | Done, localnet regressions pass |
 
 ## Critical
 
@@ -85,6 +88,8 @@ rejected as expected: fulfill paying someone other than the drawn winner (6013)
 
 Localnet now loads a mock Switchboard program at the real program id (`solana-test-validator --bpf-program`) with the same account layout. Localnet therefore runs the same binary as mainnet, and the randomness checks are exercised end to end.
 
+Superseded 2026-10: the Switchboard checks and regression lines above no longer exist in the code. See "2026-10: switch to ORAO VRF" for their replacements.
+
 ## High
 
 ### H-1 `initialize` can be front-run
@@ -115,6 +120,8 @@ Regression:
 rejected as expected: request_draw by a non-keeper (could withhold unfavourable reveals) (6023)
 rejected as expected: fulfill after the randomness account was re-committed (6015)
 ```
+
+Superseded 2026-10: under ORAO VRF the requester has no reveal to withhold, and a second request while a draw is pending fails with `BadStatus`. See "2026-10: switch to ORAO VRF".
 
 ### H-4 Fenwick slots never freed: dust deposits permanently DoS a jar
 
@@ -271,6 +278,55 @@ Source: Almanax scan, finding `b1e0aa97`. `fulfill_draw` sliced `directory.balan
 
 Source: Almanax scan, finding `a090668b`. `deposit` incremented `directory.occupied[s]` with `+= 1`. A shard hands out at most 511 slots, so a `u16` cannot overflow. The finding also assumed release builds wrap on overflow. This workspace builds with `overflow-checks = true`, so an overflow would abort the transaction instead. The increment now uses `checked_add` (`MathOverflow`), which makes the bound explicit.
 
+## 2026-10: switch to ORAO VRF
+
+Why: Switchboard shut down. Its foundation announced the closure on 2026-09-19 and support ended on 2026-09-25. Its Crossbar host (`crossbar.switchboard.xyz`) no longer resolves in DNS and its oracle gateways return errors, so the keeper's `commitIx` failed with "No eligible randomness oracle candidates were found". When this was found on 2026-10-08, all 10 mainnet jars were still in round 0 with status `Open`, so no mainnet draw ever ran under Switchboard and no pending draw needed migrating.
+
+Draws now use ORAO VRF (`VRFzZoJdhFWL8rkvu87LpKM3RbcVezpMEc6X5GVDr7y`, the same id on devnet and mainnet; network state `5ER1oENnV4srxYdAynUfRzWeQCPQaqMiAp4VqyMbSqnK`). The ORAO crate (`orao-solana-vrf` 0.7.0) needs Anchor 0.32, so `randomness.rs` hand-rolls the `request_v2` CPI and the `RandomnessV2` parser, as it did for Switchboard. ARCHITECTURE.md section 5.7 describes the design.
+
+What replaced each Switchboard check:
+
+| Switchboard check (C-2, H-3) | ORAO VRF replacement |
+| --- | --- |
+| Pinned Switchboard program id and default queue; a `devnet` cargo feature switched them | Pinned ORAO VRF id and network state PDA, the same on every cluster. `request_draw` requires `vrf_program` (executable) and `network_state` to equal them (`BadRandomnessAccount`). The `devnet` feature was removed, so every cluster runs one binary. |
+| Account owned by Switchboard, parsed at fixed offsets, queue equal to the pinned queue | `fulfill_draw` requires the account to be owned by ORAO and carry the `RandomnessV2` discriminator (`BadRandomnessAccount`), and parses it at fixed offsets (state at 8, seed at 41, value at 73). |
+| Commit in the same transaction (`seed_slot == slot - 1`, not yet revealed) | The seed is derived on-chain: `draw_seed = sha256("stonksauce-draw" \|\| jar \|\| round_index \|\| nonce)`. The request account must be ORAO's PDA for that seed (`BadRandomnessAccount`) and is created by the CPI. ORAO creates each seed's account only once, so a seed whose value is already known can never be reused. |
+| `address = jar.randomness_account` in `fulfill_draw` | Unchanged; it now holds the ORAO request PDA. |
+| `seed_slot == jar.commit_slot`, so a re-commit voids the draw (H-3) | The account's seed must equal `draw_seed(jar, round_index, jar.draw_nonce)` (`RandomnessStale`). A second `request_draw` while one is pending fails with `BadStatus`. |
+| Revealed in the current slot, value non-zero (`RandomnessUnready`) | Fulfilled (state 1) and value not all zero (`RandomnessUnready`). The value is final once ORAO writes it, so no same-slot rule is needed. |
+| `request_draw` keeper-only, because the committer controlled the reveal | `request_draw` is still keeper or admin only, because the requester pays ORAO's fee and the request rent. `fulfill_draw` is now permissionless in practice: anyone can settle once ORAO has answered. |
+
+New risk, seed squatting: anyone can call ORAO `request_v2` for the next draw's seed first. That only makes `request_draw` fail for that nonce. The keeper uses a fresh random nonce for every request (`newDrawNonce`) and retries, and the squatter learns nothing about any seed the draw will use.
+
+State and interface: the jar field `commit_slot` was renamed `draw_nonce` (same `u64` at the same offset, so the 512-byte `Jar` layout is unchanged and existing jars need no migration). The `DrawCancelled` field `commit_slot` was renamed `draw_nonce`. `request_draw` takes `nonce: u64`, and its crank is writable because it pays. Error codes are unchanged; their messages now read: 6014 `RandomnessUnready` "Randomness is not ready", 6015 `RandomnessStale` "Randomness request is for a different draw", 6016 `BadRandomnessAccount` "Not the ORAO VRF request for this draw".
+
+`cancel_draw` now takes the jar's request account (`address = jar.randomness_account`, `BadRandomnessAccount`) and refuses with the new `DrawFulfilled` (6038) when the request is one `fulfill_draw` would accept. Without this, a fulfilled draw that nobody settled for an hour could be cancelled and requested again, which is a re-roll. The check runs before the timeout check, and a pre-switch Switchboard account never counts as fulfilled, so an ORAO outage still unlocks after an hour. The keeper now tries to settle before it considers cancelling. Deployed to mainnet on 2026-10-08, executable hash `16ef4ac1a68a66b99c4453389d68e84f8205e73dbb5ba5d07d2a8bd77dfdd23e`.
+
+Localnet: `mock_orao` replaces `mock_switchboard` at the real ORAO id. Its `mock_fulfill` lets the network authority (the localnet admin and keeper) write any value, which is only acceptable locally.
+
+Regression (all passing on localnet on 2026-10-08):
+
+```
+rejected as expected: request_draw by a non-keeper (6023)
+rejected as expected: request_draw naming a request that is not this draw's seed (6016)
+rejected as expected: request_draw through a program other than ORAO VRF (6016)
+rejected as expected: request_draw with a network state other than ORAO's (6016)
+rejected as expected: request_draw on a seed someone already requested (0)
+draw requested under nonce 107n after the squatted one failed
+rejected as expected: second request_draw while one is pending (re-roll) (6019)
+rejected as expected: cancel_draw naming a request that is not the jar's (6016)
+rejected as expected: fulfill before ORAO answers (6014)
+rejected as expected: fulfill reading a fulfilled request for another seed (6016)
+rejected as expected: cancel_draw once ORAO has answered (6038)
+rejected as expected: fulfill while ORAO has not answered (6014)
+```
+
+Code 0 is the System Program's `AccountAlreadyInUse`, raised when `request_v2` tries to create the squatted request account again; the check accepts any error. The `WinnerMismatch` and `WrongShard` fulfill guards are unchanged. The "settle (permissionless once ORAO answers)" section has a non-keeper user settle the draw. The Switchboard-only regressions (commit from an earlier slot, non-default queue, re-commit after request) were removed.
+
+Unit tests in `randomness.rs` replace the Switchboard ones: `discriminators_and_network_state_match_orao`, `reads_the_first_16_bytes_of_a_fulfilled_request`, `pending_request_is_not_ready`, `other_seed_or_account_type_is_rejected`, `only_an_answered_orao_request_counts_as_fulfilled` and `seeds_differ_per_jar_round_and_nonce`. `cargo test -p stonksauce --lib` passes 28 tests.
+
+Trust model: under Switchboard the keeper could simulate the reveal, learn the winner first and withhold an unfavourable result until the one-hour cancel (old I-6). Under ORAO the keeper cannot see the value before it is on-chain, once it is on-chain anyone can settle, and `cancel_draw` refuses a fulfilled draw, so withholding no longer works. The keeper can still delay requesting a draw. The randomness now relies on ORAO's quorum of fulfilment authorities; a colluding quorum could bias results, similar to trusting Switchboard's oracle TEEs before. The one-hour `cancel_draw` still protects against an ORAO outage (H-6).
+
 ## Informational and accepted risks
 
 - I-1 Just-in-time deposits. A depositor could deposit just before `next_draw_ts` and withdraw right after settlement, winning with probability proportional to stake for the time the stake is exposed. Mitigated by time-weighting: `deposit` adds only `amount * time_left / round_length` to the draw tree, `withdraw` keeps the same fraction of draw weight as of balance, and `fulfill_draw` rebuilds the tree from full balances for the next round. A deposit after the countdown ends counts nothing toward the pending draw. Full odds now require holding for the whole round.
@@ -278,12 +334,12 @@ Source: Almanax scan, finding `a090668b`. `deposit` incremented `directory.occup
 - I-3 StonkFun controls the stake token's transfer fee. The SAUCE transfer-fee config authority (`WLHv2UAZm6z4KyaaELi5pjdbJh6RESMva1Rnn8pJVVh`) can raise the fee up to the Token-2022 maximum. Deposits are credited net of the actual fee received, so accounting stays correct, but withdrawals would pay the higher fee.
 - I-4 Position rent is not reclaimed. A fully withdrawn position account stays open. The rent is roughly 0.0015 SOL per user, per jar.
 - I-5 Mainnet buyback is not yet exercised. The program side of Jupiter routing is ready: pass-through `swap_data`, the whitelisted program, and post-checks. The keeper only implements the `mock_amm` route. The swap authority PDA cannot pay rent for intermediate accounts, so a Jupiter route must be built with `useSharedAccounts` and a pre-created SAUCE vault. The swap authority must be the route's `userTransferAuthority` and acts as a delegate on the fee vault rather than its owner (M-4), so confirm on a mainnet fork that the chosen route accepts a delegated source account. It also needs a quote-based `min_out`. Until then, keep fees in the fee vault; they are safe there.
-- I-6 Keeper liveness and censorship. The keeper can delay a draw by up to one hour (`cancel_draw` timeout) but cannot pick the winner. If the keeper key is lost, rotate it with `set_keeper`. A pending draw committed by the old key has to time out.
+- I-6 Keeper liveness and randomness trust. Updated 2026-10 for ORAO VRF. The keeper can delay requesting a draw but cannot pick the winner or see the value before ORAO writes it on-chain. Once it is on-chain anyone can call `fulfill_draw`, and `cancel_draw` refuses a fulfilled draw (`DrawFulfilled`), so an unfavourable result cannot be withheld or re-rolled. Randomness relies on ORAO's quorum of fulfilment authorities, and a colluding quorum could bias results. If the keeper key is lost, rotate it with `set_keeper`; a draw the old key requested still settles once ORAO answers. Under Switchboard (before 2026-10) the keeper could simulate the reveal and withhold until the one-hour cancel, and a pending draw committed by an old key had to time out.
 
 ## Operational requirements that the fixes depend on
 
 1. Run `initialize` from the upgrade authority before transferring it to a multisig.
 2. Set `config.admin` to the multisig with `propose_admin` and `accept_admin`.
-3. Use a dedicated hot keeper key. It can only request draws, cancel stale draws and buy back through the whitelisted program.
+3. Use a dedicated hot keeper key. It can only request draws, cancel stale draws and buy back through the whitelisted program. Keep it funded: each `request_draw` pays ORAO's fee and the request rent.
 4. Leave `open_jar_creation` off unless jar squatting is acceptable.
-5. Build mainnet without cargo features. Build devnet with `--features devnet`.
+5. Build every cluster without cargo features. The `devnet` feature was removed in 2026-10; localnet, devnet and mainnet run one identical binary.

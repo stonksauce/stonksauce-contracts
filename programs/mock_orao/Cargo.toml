@@ -1,12 +1,12 @@
 [package]
-name = "mock-switchboard"
+name = "mock-orao"
 version = "0.1.0"
-description = "Localnet stand-in for Switchboard On-Demand randomness. Never deploy to a public cluster."
+description = "Localnet stand-in for ORAO VRF randomness. Never deploy to a public cluster."
 edition = "2021"
 
 [lib]
 crate-type = ["cdylib", "lib"]
-name = "mock_switchboard"
+name = "mock_orao"
 
 [features]
 default = []
@@ -18,4 +18,3 @@ idl-build = ["anchor-lang/idl-build"]
 
 [dependencies]
 anchor-lang = "0.31.1"
-bytemuck = { version = "1.21", features = ["derive", "min_const_generics"] }

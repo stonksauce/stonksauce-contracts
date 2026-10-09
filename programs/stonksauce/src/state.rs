@@ -78,10 +78,11 @@ pub struct Jar {
     /// Smallest non-zero position. Makes filling every shard slot with dust
     /// cost real capital.
     pub min_deposit: u64,
-    /// Switchboard randomness account committed by `request_draw`.
+    /// ORAO request created by `request_draw`; default when `Open`.
     pub randomness_account: Pubkey,
-    /// `seed_slot` of that commitment. A re-commit changes it, which voids the draw.
-    pub commit_slot: u64,
+    /// Nonce in that request's seed. Before the ORAO switch this held a
+    /// Switchboard commit slot, so jars never drawn under it read 0.
+    pub draw_nonce: u64,
     pub draw_requested_ts: i64,
     /// Largest position one wallet may hold, in raw stake units; 0 means no
     /// limit. Jars created before this field read 0 from their spare bytes.
@@ -220,7 +221,7 @@ mod cap_tests {
             round_index: 0,
             min_deposit: 0,
             randomness_account: Pubkey::default(),
-            commit_slot: 0,
+            draw_nonce: 0,
             draw_requested_ts: 0,
             max_deposit: u64::MAX,
         };

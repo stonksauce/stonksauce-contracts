@@ -1,7 +1,7 @@
 use crate::error::SauceError;
 use crate::events::DrawSettled;
 use crate::fenwick;
-use crate::randomness::Randomness;
+use crate::randomness;
 use crate::state::{
     position_index, refresh_shard, require_shard_address, RoundStatus, MAX_SHARDS,
     PROTOCOL_FEE_BPS,
@@ -19,8 +19,13 @@ pub fn handler(ctx: Context<FulfillDraw>) -> Result<()> {
     require!(ctx.accounts.jar.total_deposits > 0, SauceError::NoDeposits);
 
     let clock = Clock::get()?;
-    let randomness = Randomness::load(&ctx.accounts.randomness_account.to_account_info())?
-        .revealed_value(ctx.accounts.jar.commit_slot, clock.slot)?;
+    let seed = randomness::draw_seed(
+        &ctx.accounts.jar.key(),
+        ctx.accounts.jar.round_index,
+        ctx.accounts.jar.draw_nonce,
+    );
+    let randomness =
+        randomness::fulfilled_value(&ctx.accounts.randomness_account.to_account_info(), &seed)?;
 
     let pot = ctx.accounts.jar.pending_pot.min(ctx.accounts.reward_vault.amount);
     require!(pot > 0, SauceError::EmptyPot);
@@ -144,7 +149,7 @@ pub fn handler(ctx: Context<FulfillDraw>) -> Result<()> {
     jar.pending_pot = 0;
     jar.pending_winner = winner;
     jar.randomness_account = Pubkey::default();
-    jar.commit_slot = 0;
+    jar.draw_nonce = 0;
     jar.round_index = jar.round_index.saturating_add(1);
 
     emit!(DrawSettled {

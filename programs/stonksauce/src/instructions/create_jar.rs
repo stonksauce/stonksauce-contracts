@@ -77,7 +77,7 @@ pub fn handler(ctx: Context<CreateJar>, cap_bps: u16, min_deposit: u64, max_depo
     jar.bump = ctx.bumps.jar;
     jar.min_deposit = min_deposit;
     jar.randomness_account = Pubkey::default();
-    jar.commit_slot = 0;
+    jar.draw_nonce = 0;
     jar.draw_requested_ts = 0;
     jar.max_deposit = max_deposit;
 

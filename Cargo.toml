@@ -1,5 +1,5 @@
 [workspace]
-members = ["programs/stonksauce", "programs/mock_amm", "programs/mock_switchboard"]
+members = ["programs/stonksauce", "programs/mock_amm", "programs/mock_orao"]
 resolver = "2"
 
 [profile.release]

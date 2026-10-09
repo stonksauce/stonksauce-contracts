@@ -1,14 +1,15 @@
 use crate::error::SauceError;
-use crate::randomness::Randomness;
+use crate::randomness;
 use crate::state::RoundStatus;
 use crate::RequestDraw;
 use anchor_lang::prelude::*;
 
-pub fn handler(ctx: Context<RequestDraw>) -> Result<()> {
+/// `nonce` only has to make the seed unused: a retry after `cancel_draw` in
+/// the same round needs a fresh one.
+pub fn handler(ctx: Context<RequestDraw>, nonce: u64) -> Result<()> {
     let config = &ctx.accounts.config;
     require!(!config.paused, SauceError::Paused);
-    // Switchboard only lets the randomness authority reveal, so whoever commits
-    // can peek at the outcome and withhold it. Keep that power with the keeper.
+    // The requester pays ORAO's fee and the request rent.
     require!(
         config.is_operator(&ctx.accounts.crank.key()),
         SauceError::NotKeeper
@@ -23,15 +24,28 @@ pub fn handler(ctx: Context<RequestDraw>) -> Result<()> {
     let pot = ctx.accounts.reward_vault.amount;
     require!(pot > 0, SauceError::EmptyPot);
 
-    let randomness = Randomness::load(&ctx.accounts.randomness_account.to_account_info())?;
-    randomness.require_fresh_commit(clock.slot)?;
+    let seed = randomness::draw_seed(&ctx.accounts.jar.key(), ctx.accounts.jar.round_index, nonce);
+    require_keys_eq!(
+        ctx.accounts.randomness_request.key(),
+        randomness::request_address(&seed),
+        SauceError::BadRandomnessAccount
+    );
+    randomness::request(
+        &ctx.accounts.vrf_program.to_account_info(),
+        &ctx.accounts.crank.to_account_info(),
+        &ctx.accounts.network_state.to_account_info(),
+        &ctx.accounts.treasury.to_account_info(),
+        &ctx.accounts.randomness_request.to_account_info(),
+        &ctx.accounts.system_program.to_account_info(),
+        seed,
+    )?;
 
     let jar = &mut ctx.accounts.jar;
     jar.status = RoundStatus::DrawPending;
     jar.pending_pot = pot;
     jar.pending_winner = Pubkey::default();
-    jar.randomness_account = ctx.accounts.randomness_account.key();
-    jar.commit_slot = randomness.seed_slot;
+    jar.randomness_account = ctx.accounts.randomness_request.key();
+    jar.draw_nonce = nonce;
     jar.draw_requested_ts = clock.unix_timestamp;
     Ok(())
 }

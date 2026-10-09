@@ -8,7 +8,7 @@ StonkFun reward tokens are Token-2022 tokens with a transfer fee that is paid ou
 | --- | --- |
 | Program id | `FhGABn7RcdhGc4CrNx4ohDdAsFUFiHz48y4QDMfxe2UF` |
 | Framework | Anchor 0.31.1, SBPF v3 |
-| Randomness | Switchboard On-Demand |
+| Randomness | [ORAO VRF](https://github.com/orao-network/solana-vrf) (Switchboard On-Demand until v1.1) |
 | License | [BUSL-1.1](LICENSE), converting to GPL-2.0-or-later on 2030-09-28 |
 
 ## Layout
@@ -16,7 +16,7 @@ StonkFun reward tokens are Token-2022 tokens with a transfer fee that is paid ou
 | Path | Contents |
 | --- | --- |
 | `programs/stonksauce` | The production program. |
-| `programs/mock_switchboard` | Test stand-in for Switchboard On-Demand, loaded at the Switchboard program id on localnet. Never deployed. |
+| `programs/mock_orao` | Test stand-in for ORAO VRF, loaded at the ORAO program id on localnet. Its authority can write any value, so it is never deployed. |
 | `programs/mock_amm` | Constant-product pool used as the buyback swap program in tests and on devnet. Never deployed to mainnet. |
 | `docs/SECURITY_REVIEW.md` | Internal security review: every finding, its fix and its regression check. |
 
@@ -25,7 +25,7 @@ StonkFun reward tokens are Token-2022 tokens with a transfer fee that is paid ou
 - **Jars.** One jar per stake mint. The jar PDA owns the stake vault (all deposits), the reward vault (the pot, paid by StonkFun), a fee vault and a SAUCE vault.
 - **Positions.** Balances and draw weights live in zero-copy shards of up to 511 depositors, each a Fenwick tree, indexed by a per-jar directory. A jar holds up to 196,224 depositors, and a weighted pick is O(log n).
 - **Odds.** A deposit's weight is its size times the share of the round it was held, so depositing just before a draw buys almost no odds.
-- **Draws.** When a round ends and the pot is non-empty, the keeper commits a Switchboard randomness account and calls `request_draw`; `fulfill_draw` reads the revealed value, picks the winner and pays 95% of the pot. A draw pending for more than an hour can be cancelled by anyone.
+- **Draws.** When a round ends and the pot is non-empty, the keeper calls `request_draw`, which asks ORAO VRF for randomness on a seed derived on-chain from the jar, round and a nonce. Once a quorum of ORAO's fulfilment authorities has written the value, anyone can call `fulfill_draw`, which picks the winner and pays 95% of the pot. Nobody, including the keeper, can see the value before it is on-chain. A draw ORAO has not answered within an hour can be cancelled by anyone; an answered draw can only be settled.
 - **Fees.** 5% of every pot goes to the fee vault. `buyback_and_burn` swaps it for SAUCE through the whitelisted swap program and burns the output, with post-conditions on the swap result.
 - **Limits.** Each jar has a minimum deposit, an absolute maximum per wallet, and an optional share cap (5% to 100% of the jar).
 - **Admin.** Two-step admin transfer. The admin sets the keeper, swap program, round length, creation fee and per-jar limits. Pausing blocks new jars, deposits and new draw requests; withdrawals and settling or cancelling a pending draw always work.
@@ -36,7 +36,7 @@ StonkFun reward tokens are Token-2022 tokens with a transfer fee that is paid ou
 cargo-build-sbf --manifest-path programs/stonksauce/Cargo.toml --arch v3
 ```
 
-The default build targets mainnet Switchboard ids. `--features devnet` switches to the devnet program and queue.
+ORAO VRF has the same program id on devnet and mainnet, so every cluster runs the same binary; there are no cluster features.
 
 ## Tests
 

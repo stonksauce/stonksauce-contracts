@@ -39,7 +39,7 @@ pub struct JarCreated {
 pub struct DrawCancelled {
     pub jar: Pubkey,
     pub randomness_account: Pubkey,
-    pub commit_slot: u64,
+    pub draw_nonce: u64,
     pub timestamp: i64,
 }
 

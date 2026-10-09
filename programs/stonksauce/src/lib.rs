@@ -89,8 +89,8 @@ pub mod stonksauce {
         instructions::withdraw::handler(ctx, amount)
     }
 
-    pub fn request_draw(ctx: Context<RequestDraw>) -> Result<()> {
-        instructions::request_draw::handler(ctx)
+    pub fn request_draw(ctx: Context<RequestDraw>, nonce: u64) -> Result<()> {
+        instructions::request_draw::handler(ctx, nonce)
     }
 
     pub fn fulfill_draw(ctx: Context<FulfillDraw>) -> Result<()> {
@@ -349,6 +349,7 @@ pub struct Withdraw<'info> {
 
 #[derive(Accounts)]
 pub struct RequestDraw<'info> {
+    #[account(mut)]
     pub crank: Signer<'info>,
     #[account(seeds = [b"config"], bump = config.bump)]
     pub config: Account<'info, Config>,
@@ -356,8 +357,20 @@ pub struct RequestDraw<'info> {
     pub jar: Account<'info, Jar>,
     #[account(address = jar.reward_vault)]
     pub reward_vault: InterfaceAccount<'info, TokenAccount>,
-    /// CHECK: owner, discriminator, queue and freshness checked in `Randomness::load`.
-    pub randomness_account: UncheckedAccount<'info>,
+    /// CHECK: pinned to ORAO VRF.
+    #[account(executable, address = randomness::ORAO_VRF_PROGRAM_ID @ SauceError::BadRandomnessAccount)]
+    pub vrf_program: UncheckedAccount<'info>,
+    /// CHECK: ORAO's network configuration PDA.
+    #[account(mut, address = randomness::ORAO_NETWORK_STATE @ SauceError::BadRandomnessAccount)]
+    pub network_state: UncheckedAccount<'info>,
+    /// CHECK: ORAO checks it against its network state.
+    #[account(mut)]
+    pub treasury: UncheckedAccount<'info>,
+    /// CHECK: the request PDA for this draw's seed, checked in the handler and
+    /// created by ORAO.
+    #[account(mut)]
+    pub randomness_request: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -396,7 +409,8 @@ pub struct FulfillDraw<'info> {
     #[account(mut, token::mint = quote_mint, token::token_program = quote_token_program)]
     pub winner_quote: InterfaceAccount<'info, TokenAccount>,
     pub quote_token_program: Interface<'info, TokenInterface>,
-    /// CHECK: must be the account committed in `request_draw`; parsed in the handler.
+    /// CHECK: must be the request created by `request_draw`; owner, seed and
+    /// fulfilment checked in the handler.
     #[account(address = jar.randomness_account @ SauceError::BadRandomnessAccount)]
     pub randomness_account: UncheckedAccount<'info>,
 }
@@ -405,6 +419,10 @@ pub struct FulfillDraw<'info> {
 pub struct CancelDraw<'info> {
     #[account(mut, seeds = [b"jar", jar.stake_mint.as_ref()], bump = jar.bump)]
     pub jar: Account<'info, Jar>,
+    /// CHECK: the request created by `request_draw`; read only to refuse
+    /// cancelling a draw ORAO has already answered.
+    #[account(address = jar.randomness_account @ SauceError::BadRandomnessAccount)]
+    pub randomness_account: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]

@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.1
+
+Switchboard shut down (announced 2026-09-19, support ended 2026-09-25), so draws could no longer get randomness. No mainnet draw had run under Switchboard, so no pending draw needed migrating. This release moves draws to ORAO VRF (`VRFzZoJdhFWL8rkvu87LpKM3RbcVezpMEc6X5GVDr7y`).
+
+- `request_draw(nonce)` CPIs ORAO `request_v2` with `seed = sha256("stonksauce-draw" || jar || round_index || nonce)`. The request account must be ORAO's PDA for that seed, and the ORAO program and network state are pinned.
+- `fulfill_draw` reads the fulfilled ORAO request: owner, `RandomnessV2` discriminator, seed and a non-zero value are checked. Anyone can settle once ORAO has answered, and nobody can see the value earlier, so the keeper can no longer withhold an unfavourable result.
+- `cancel_draw` takes the request account and refuses with the new `DrawFulfilled` (6038) once ORAO has answered, so a fulfilled draw can never be cancelled and re-rolled. A draw ORAO has not answered still unlocks after one hour.
+- The jar field and `DrawCancelled` field `commit_slot` are renamed `draw_nonce` (same offset; the `Jar` layout is unchanged). Other error codes are unchanged.
+- The `devnet` cargo feature is removed; every cluster runs one binary.
+- `mock_orao` replaces `mock_switchboard` for local tests.
+
+Security: see "2026-10: switch to ORAO VRF" in [docs/SECURITY_REVIEW.md](docs/SECURITY_REVIEW.md). Randomness now trusts ORAO's quorum of fulfilment authorities.
+
+Reproducible build: `solana-verify build --library-name stonksauce --arch v3 --base-image solanafoundation/solana-verifiable-build:4.1.0`, executable hash `16ef4ac1a68a66b99c4453389d68e84f8205e73dbb5ba5d07d2a8bd77dfdd23e`.
+
 ## v1.0
 
 First mainnet release of the `stonksauce` program, `FhGABn7RcdhGc4CrNx4ohDdAsFUFiHz48y4QDMfxe2UF`.

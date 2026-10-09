@@ -32,9 +32,9 @@ pub enum SauceError {
     WinnerMismatch,
     #[msg("Randomness is not ready")]
     RandomnessUnready,
-    #[msg("Randomness commitment is stale or was replaced")]
+    #[msg("Randomness request is for a different draw")]
     RandomnessStale,
-    #[msg("Not a Switchboard randomness account on the default queue")]
+    #[msg("Not the ORAO VRF request for this draw")]
     BadRandomnessAccount,
     #[msg("Cap bps out of range")]
     InvalidCap,
@@ -78,4 +78,6 @@ pub enum SauceError {
     OverMaxDeposit,
     #[msg("Maximum per wallet is below the jar minimum")]
     InvalidMaxDeposit,
+    #[msg("Randomness is ready, so the draw must be settled, not cancelled")]
+    DrawFulfilled,
 }
