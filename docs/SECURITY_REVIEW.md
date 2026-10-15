@@ -35,6 +35,8 @@ Every finding marked Fixed has a regression check in `scripts/localnet/e2e.ts`. 
 | L-7 | Low | Unchecked `occupied` increment | Fixed (hardening) |
 | I-1 to I-6 | Info | Economic and operational risks | Documented |
 | 2026-10 | Change | Switchboard On-Demand replaced by ORAO VRF (supersedes the C-2 and H-3 checks) | Done, localnet regressions pass |
+| M-6 | Medium | Buyback forwards the crank's signature into the swap CPI (found in the SauceHole review, SH-1) | Open; fix in the next stonksauce upgrade |
+| SH | Review | `programs/sauce_hole` (the SauceHole), see "2026-10: SauceHole program" | SH-1 fixed; localnet and devnet regressions pass |
 
 ## Critical
 
@@ -333,7 +335,7 @@ Trust model: under Switchboard the keeper could simulate the reveal, learn the w
 - I-2 Sybil wallets bypass the per-wallet caps. Both `cap_bps` (share of the jar) and `max_deposit` (absolute amount) limit one position, not one person. A cap does not change anyone's expected value, since odds stay proportional to stake; it limits how concentrated a single position looks and how much one wallet can take in a draw. The admin can change either limit with `set_jar_cap` and `set_jar_max_deposit`. New limits apply to later deposits only, so lowering one never locks or seizes an existing position.
 - I-3 StonkFun controls the stake token's transfer fee. The SAUCE transfer-fee config authority (`WLHv2UAZm6z4KyaaELi5pjdbJh6RESMva1Rnn8pJVVh`) can raise the fee up to the Token-2022 maximum. Deposits are credited net of the actual fee received, so accounting stays correct, but withdrawals would pay the higher fee.
 - I-4 Position rent is not reclaimed. A fully withdrawn position account stays open. The rent is roughly 0.0015 SOL per user, per jar.
-- I-5 Mainnet buyback is not yet exercised. The program side of Jupiter routing is ready: pass-through `swap_data`, the whitelisted program, and post-checks. The keeper only implements the `mock_amm` route. The swap authority PDA cannot pay rent for intermediate accounts, so a Jupiter route must be built with `useSharedAccounts` and a pre-created SAUCE vault. The swap authority must be the route's `userTransferAuthority` and acts as a delegate on the fee vault rather than its owner (M-4), so confirm on a mainnet fork that the chosen route accepts a delegated source account. It also needs a quote-based `min_out`. Until then, keep fees in the fee vault; they are safe there.
+- I-5 Mainnet buyback is not yet exercised. The program side of Jupiter routing is ready: pass-through `swap_data`, the whitelisted program, and post-checks. The keeper only implements the `mock_amm` route. The swap authority PDA cannot pay rent for intermediate accounts, so a Jupiter route must be built with `useSharedAccounts` and a pre-created SAUCE vault. The swap authority must be the route's `userTransferAuthority` and acts as a delegate on the fee vault rather than its owner (M-4), so confirm on a mainnet fork that the chosen route accepts a delegated source account (the SauceHole fork rehearsal showed Jupiter `shared_accounts_route` accepts one, SH-I11). It also needs a quote-based `min_out`. Until then, keep fees in the fee vault; they are safe there.
 - I-6 Keeper liveness and randomness trust. Updated 2026-10 for ORAO VRF. The keeper can delay requesting a draw but cannot pick the winner or see the value before ORAO writes it on-chain. Once it is on-chain anyone can call `fulfill_draw`, and `cancel_draw` refuses a fulfilled draw (`DrawFulfilled`), so an unfavourable result cannot be withheld or re-rolled. Randomness relies on ORAO's quorum of fulfilment authorities, and a colluding quorum could bias results. If the keeper key is lost, rotate it with `set_keeper`; a draw the old key requested still settles once ORAO answers. Under Switchboard (before 2026-10) the keeper could simulate the reveal and withhold until the one-hour cancel, and a pending draw committed by an old key had to time out.
 
 ## Operational requirements that the fixes depend on
@@ -343,3 +345,86 @@ Trust model: under Switchboard the keeper could simulate the reveal, learn the w
 3. Use a dedicated hot keeper key. It can only request draws, cancel stale draws and buy back through the whitelisted program. Keep it funded: each `request_draw` pays ORAO's fee and the request rent.
 4. Leave `open_jar_creation` off unless jar squatting is acceptable.
 5. Build every cluster without cargo features. The `devnet` feature was removed in 2026-10; localnet, devnet and mainnet run one identical binary.
+
+## 2026-10: SauceHole program
+
+Scope: `programs/sauce_hole` (program id `Ho1ezeQ2fb1zEL3aK94e4q5j7g3vwGfi5PguPWGjB2VC`), its client `scripts/lib/hole.ts`, the keeper step `keeper/src/hole.ts` and the Sauce Meter rules in `shared/getSauced.ts`. Not yet on mainnet. Reviewed binary: sha256 `bb7bba6ec945431c4f82ed1faba2b40105bfb5ef37ea6c7763e58f58e5217189` (the `cargo-build-sbf` build; the mainnet `solana-verify` build has its own hash).
+
+The promise under review: STONKSAUCE that enters the hole never leaves, and STONK rewards sent to the hole can only be spent buying more STONKSAUCE into it.
+
+Design: one singleton `Hole` PDA (seed `hole`, `4Z3tMJTnRuQw7XSqLA1JrcHPAj3mKfL2rLAGcCJrGM7h`) owns two ATAs, the STONKSAUCE vault and the STONK reward vault. `feed` moves the feeder's STONKSAUCE into the vault and credits what actually arrived, net of the 3% transfer tax. `get_sauced` (keeper or admin only) approves the swap authority PDA (seed `swap_authority`) as delegate on the reward vault for exactly `amount_in`, invokes the configured swap program with that PDA as the only signer, revokes, and then checks balances and authorities on both vaults. No instruction transfers, burns, approves, freezes or closes the STONKSAUCE vault, and the hole PDA never signs for the swap.
+
+### SH-1 (Medium) Crank signature forwarded into the swap CPI. Fixed.
+
+`get_sauced` built the swap's account metas with `is_signer: key == swap_authority || account.is_signer`, so any outer signer passed in the swap accounts, including the keeper's own wallet, kept its signature inside the swap program. A hostile or compromised swap program could pair a real buy (passing every balance check) with a transfer out of the keeper's wallet. Fix: only the swap authority is ever marked as a signer. The mock AMM and Jupiter shared-accounts routes need no other signer.
+
+The live stonksauce `buyback_and_burn` (`buyback.rs`, line 46) has the same pattern (M-6). It is exploitable only through a swap program the admin whitelisted, and only against the crank's wallet, never the vaults. Apply the same one-line fix in the next stonksauce upgrade.
+
+Regression: the test sets the System program as the swap program and passes a transfer from the crank. On the pre-fix binary the drain executed and the transaction only reverted at settlement (`SwapViolation`). The test now requires the failure to be the System program's missing signature, before settlement, and checks the crank's SOL is unchanged.
+
+### Attacks replayed against the program
+
+| Attack | Protection | Regression line |
+| --- | --- | --- |
+| Front-run `initialize` | Signer must be the program's upgrade authority | `hole initialize front-run by a non upgrade authority (6003)` |
+| Grief `initialize` by pre-creating the hole's ATAs | Vaults use `init_if_needed`, and Anchor checks an existing ATA's mint, owner and token program | not replayed |
+| STONKSAUCE mint with a permanent delegate, transfer hook, pausable, non-transferable or default-frozen state | `require_safe_mint` rejects these extensions | `hole over a STONKSAUCE mint with a permanent delegate (6007)` |
+| Reward mint with a freeze authority | `require_safe_mint` | `hole over a reward mint with a freeze authority (6007)` |
+| STONKSAUCE as its own reward mint | `SameMint` | `hole with STONKSAUCE as its own reward mint (6008)` |
+| Second `initialize` | Hole PDA already exists | `second initialize of the singleton hole (0)` |
+| Feed from another wallet's account, into a foreign vault, or of another mint | Anchor constraints on authority, vault address and mint | `(2015)`, `(2012)`, `(2012)` |
+| Dust feeds to pad the Sauce Meter | `min_feed` (admin-set, default 1 STONKSAUCE) | `feed below min_feed (6006)` |
+| Permissionless GetSauced with `min_out = 1` (sandwich) | Keeper or admin only | `get_sauced by a non-keeper (6004)` |
+| Unconfigured swap program | `address = hole.swap_program` | `(6010)` |
+| Hole PDA passed into the swap (would hand it the hole's signature) | `ForbiddenSwapAccount` | `(6011)` |
+| Swap that approves its own delegate or takes ownership of the reward vault | The swap authority is only a delegate, so the token program refuses | `(4)`, `(4)` |
+| Swap that spends more than `amount_in` | Delegation is capped at `amount_in` | `(1)` |
+| Swap that pockets `amount_in` and buys nothing, or below `min_out` | `settle`: bought must be above 0 and at least `min_out` | `(6013)` |
+| Swap that moves or closes the STONKSAUCE vault with the swap authority | The swap authority has no authority over it | `(4)`, `(11)` |
+| Swap that spends the crank's wallet | SH-1 | missing required signature |
+| Direct transfer out of, or close of, the STONKSAUCE vault | Only the hole owns it, and it never signs for it | `(4)`, `(11)` |
+| Admin actions by others; hijacked handover | `has_one = admin`; two-step `propose_admin` and `accept_admin` | `(6001)`, `(6002)` |
+
+After every step the suite asserts the STONKSAUCE vault never shrank and equals `total_fed + total_bought` plus anything sent to it directly. After a GetSauced it also checks the reward vault has no delegate, is still owned by the hole, and that the `GotSauced` event matches the balance changes.
+
+Results: `cargo test -p sauce_hole --lib` passes 14 tests (`settle`, account sizes, mint extension rules). `pnpm localnet:hole-e2e` passes with a 3% transfer tax on the localnet STONKSAUCE, like mainnet. On 2026-10-14 the program was deployed to devnet and `pnpm devnet:hole-e2e` passed against it. The testnet keeper worker then fired GetSauced unattended on a full Sauce Meter (`get_sauced reason=meter`, 35,179 compute units) and logged `meter 10.0/100, floor not met` on the next tick. The devnet STONKSAUCE stand-in has no transfer tax, so the tax path is proven on localnet only.
+
+### Trust model and accepted risks
+
+- SH-I1 Upgrade authority. Whoever holds the upgrade authority can replace the program and empty both vaults. "Locked forever" is only as strong as that key. Move it to the Squads vault right after `initialize`. Once the program has run on mainnet for a while, consider making it immutable (`solana program set-upgrade-authority --final`), which makes the lock unconditional.
+- SH-I2 Admin and keeper control the STONK rewards, never the STONKSAUCE. The admin picks the swap program and the keeper picks `min_out`. Together they could whitelist a swap that keeps `amount_in` and pays 1 raw STONKSAUCE into the vault, which passes `settle` with `min_out = 1`. Repeating that diverts the rewards. Neither role can reduce the STONKSAUCE vault. Mitigations: admin on the multisig; whitelist only Jupiter v6; announce any `set_swap_program`. A timelock on `set_swap_program` is an option before mainnet.
+- SH-I3 Price manipulation around the keeper's read. On localnet and devnet the keeper derives `min_out` from the pool reserves at tick time, minus `HOLE_SLIPPAGE_BPS` (default 1%). Someone who moves the pool just before that read gets a worse `min_out` accepted. On mainnet the keeper takes `min_out` from Jupiter's `otherAmountThreshold` and refuses a buy in three cases:
+  - Price impact: the buy is halved (up to 7 times) until its rate is within `HOLE_MAX_IMPACT_BPS` (default 1%) of a quote 1/100 of its size. Jupiter's own `priceImpactPct` was found unreliable for this pool.
+  - Deviation: the quote, with the 3% tax added back, is more than `HOLE_MAX_DEVIATION_BPS` (default 15%) below Jupiter's Price API. The two sources differed by 2.5% to 3.2% on 2026-10-15, so the default leaves room for a thin pool while catching a pool pushed well off price.
+  - Missing price: the Price API has no price for either mint.
+  The deviation check is not independent of Jupiter, and the STONK/STONKSAUCE pool held about $7k on 2026-10-15, so `HOLE_CHUNK` should stay small. Transactions are not sent through Jito yet.
+- SH-I4 `participants` is reported by the keeper. It only feeds the Sauce Meter's "new participants" score and the `GotSauced` event. No funds depend on it.
+- SH-I5 The Sauce Meter and the 48-hour backstop are enforced by the keeper, not the program. An operator can GetSauced at any time. This is by design: the program guarantees where value goes, not when.
+- SH-I6 Pause blocks both `feed` and `get_sauced` (the plan had feeds staying open). During an incident the hole stops accepting new tokens. Pausing never moves tokens already locked.
+- SH-I7 StonkFun controls the STONKSAUCE transfer fee. A higher fee lowers what a feed credits and what a buy delivers. Feeds are credited net, and the keeper's `min_out` subtracts the current epoch fee, so accounting stays exact.
+- SH-I8 A feeder whose STONKSAUCE account has CPI Guard enabled cannot feed, because `feed` moves tokens by CPI with the owner's signature. The wallet must disable CPI Guard first.
+- SH-I9 STONKSAUCE sent straight to the vault, without `feed`, is locked forever but not credited to any feeder.
+- SH-I10 `Hole` has no spare bytes (342). A field added later needs a `realloc` in that upgrade.
+- SH-I11 Mainnet GetSauced buys through Jupiter v6 `shared_accounts_route` (`keeper/src/jupiter.ts`). The keeper asks Jupiter for a route with the swap authority as `userPublicKey` and the hole's STONKSAUCE vault as destination. `patchSharedRoute` then enforces the route's shape and points its source at the reward vault, where the swap authority is a delegate:
+  - The instruction must be Jupiter v6 `shared_accounts_route`.
+  - Authority, source, destination and both mints must sit at the expected positions.
+  - No other account may sign.
+  - The swap authority's own token account may appear only in the source slot.
+  - Every outer signer flag is cleared, since only the hole signs, inside its CPI.
+  `tests/jupiter-route.test.ts` covers each rejection. `pnpm mainnet:hole:fork` rehearsed it on a mainnet fork on 2026-10-15:
+  - Jupiter accepts the delegated source.
+  - The hole received exactly the quoted `outAmount`, so Jupiter quotes STONKSAUCE net of the 3% tax and `otherAmountThreshold` is a correct `min_out`.
+  - A 100 STONK buy used 64,144 compute units with one address lookup table.
+  - The keeper's own `maybeGetSauced` landed a second buy through a different Jupiter program authority.
+  The route trusts Jupiter v6 itself, which is upgradeable (SH-I2).
+- SH-I12 Automated scan, 2026-10-15. Seven findings, triaged:
+
+  | Finding | Verdict | Action |
+  | --- | --- | --- |
+  | Keeper `allJarMints` trusts spoofed program accounts (Medium) | Not exploitable: anyone can create an account owned by the program, but its data starts zeroed and only the program can write it, so the jar discriminator cannot be forged | Added a `jarPda(stake_mint)` check anyway |
+  | `withdraw` token program not pinned (Medium) | False positive: `Interface<TokenInterface>` checks the id against SPL Token and Token-2022 before the handler runs, and the jar PDA fixes the mint and vault | None |
+  | Keeper logs the RPC URL with its API key (Low) | Valid; `hole/e2e.ts` did the same | Logs show only the host (`rpcHost` in `scripts/lib/node.ts`) |
+  | `jarActivity` downloads every jar on each tick (Low) | Valid as a cost issue; jar creation is admin-only on mainnet (`open_jar_creation` false, checked on-chain) | Fetches a 144-byte slice instead of 512 bytes; totals match the full decode on devnet |
+  | Unbounded `HOLE_SLIPPAGE_BPS` collapses `min_out` to 1 (Low) | Valid | Must be an integer from 0 to 500; the Node keeper refuses to start, the Worker turns off only the hole step; a quote that rounds to zero no longer swaps |
+  | Permissionless jar creation allows squatting (Low) | Known (H-8); `open_jar_creation` stays off | None |
+  | `withdraw` uses `saturating_sub` on totals (Low) | Deliberate: a withdrawal is bounded by `position.amount` (checked) and the vault balance (token program), and reverting on an inconsistent total would lock every other depositor; draws already refuse an inconsistent tree (M-3) | None |

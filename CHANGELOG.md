@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.2: SauceHole
+
+New program `sauce_hole`, `Ho1ezeQ2fb1zEL3aK94e4q5j7g3vwGfi5PguPWGjB2VC`. The `stonksauce` program is unchanged.
+
+- One hole per deployment (PDA `4Z3tMJTnRuQw7XSqLA1JrcHPAj3mKfL2rLAGcCJrGM7h`) owns a STONKSAUCE vault and a STONK reward vault. No instruction moves STONKSAUCE out of the vault.
+- `feed`: anyone locks STONKSAUCE in the hole; each feeder gets an on-chain record.
+- `get_sauced`: the keeper spends STONK rewards through the whitelisted swap program (Jupiter v6 on mainnet). The swap authority PDA is approved as a delegate for exactly `amount_in`, signs the CPI, and the approval is revoked afterwards. Both vaults must still be owned by the hole with no delegate or close authority, at most `amount_in` may be spent, and at least `min_out` STONKSAUCE must arrive.
+- Only the swap authority signs inside the swap CPI; outer signers are never forwarded (SH-1).
+- Admin: two-step transfer, keeper, swap program, minimum feed, pause. Pause blocks GetSauced only; feeding always works.
+
+Security: see "2026-10: SauceHole program" in [docs/SECURITY_REVIEW.md](docs/SECURITY_REVIEW.md).
+
+Reproducible build: `solana-verify build --library-name sauce_hole --arch v3 --base-image solanafoundation/solana-verifiable-build:4.1.0`, executable hash `7d30fa4355ebb1696ad10ccff3e86516c4d9f1db4bed59c936b73d70c46be2f5`.
+
 ## v1.1
 
 Switchboard shut down (announced 2026-09-19, support ended 2026-09-25), so draws could no longer get randomness. No mainnet draw had run under Switchboard, so no pending draw needed migrating. This release moves draws to ORAO VRF (`VRFzZoJdhFWL8rkvu87LpKM3RbcVezpMEc6X5GVDr7y`).

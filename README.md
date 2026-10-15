@@ -16,6 +16,7 @@ StonkFun reward tokens are Token-2022 tokens with a transfer fee that is paid ou
 | Path | Contents |
 | --- | --- |
 | `programs/stonksauce` | The production program. |
+| `programs/sauce_hole` | The SauceHole: locks STONKSAUCE forever and spends its STONK rewards buying more STONKSAUCE into itself. Program id `Ho1ezeQ2fb1zEL3aK94e4q5j7g3vwGfi5PguPWGjB2VC`. |
 | `programs/mock_orao` | Test stand-in for ORAO VRF, loaded at the ORAO program id on localnet. Its authority can write any value, so it is never deployed. |
 | `programs/mock_amm` | Constant-product pool used as the buyback swap program in tests and on devnet. Never deployed to mainnet. |
 | `docs/SECURITY_REVIEW.md` | Internal security review: every finding, its fix and its regression check. |
@@ -34,6 +35,7 @@ StonkFun reward tokens are Token-2022 tokens with a transfer fee that is paid ou
 
 ```bash
 cargo-build-sbf --manifest-path programs/stonksauce/Cargo.toml --arch v3
+cargo-build-sbf --manifest-path programs/sauce_hole/Cargo.toml --arch v3
 ```
 
 ORAO VRF has the same program id on devnet and mainnet, so every cluster runs the same binary; there are no cluster features.
