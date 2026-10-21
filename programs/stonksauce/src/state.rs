@@ -10,6 +10,12 @@ pub const MAX_CAP_BPS: u16 = 10_000;
 /// by anyone, so a stuck oracle or payout can never lock deposits.
 pub const DRAW_TIMEOUT_SECS: i64 = 3600;
 
+/// The SauceHole program, which has the same id on every cluster.
+pub const SAUCE_HOLE_PROGRAM: Pubkey = pubkey!("Ho1ezeQ2fb1zEL3aK94e4q5j7g3vwGfi5PguPWGjB2VC");
+/// Its hole PDA (seeds `[b"hole"]`). Buybacks pay into this account's
+/// STONKSAUCE associated token account.
+pub const SAUCE_HOLE: Pubkey = pubkey!("4Z3tMJTnRuQw7XSqLA1JrcHPAj3mKfL2rLAGcCJrGM7h");
+
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq)]
 pub enum RoundStatus {
     Open,
@@ -35,7 +41,7 @@ pub struct Config {
     pub keeper: Pubkey,
     /// Set by `propose_admin`; becomes admin once it signs `accept_admin`.
     pub pending_admin: Pubkey,
-    /// Only program `buyback_and_burn` may CPI into.
+    /// Only program `buyback_and_feed` may CPI into.
     pub swap_program: Pubkey,
     /// When false only the admin can create jars.
     pub open_jar_creation: bool,
@@ -132,6 +138,17 @@ pub fn round_weight(amount: u64, round_start: i64, round_end: i64, now: i64) -> 
     }
     let left = round_end.saturating_sub(now).clamp(0, length);
     ((amount as u128) * (left as u128) / (length as u128)) as u64
+}
+
+#[cfg(test)]
+mod hole_tests {
+    use super::*;
+
+    #[test]
+    fn sauce_hole_is_the_hole_programs_pda() {
+        let (pda, _) = Pubkey::find_program_address(&[b"hole"], &SAUCE_HOLE_PROGRAM);
+        assert_eq!(pda, SAUCE_HOLE);
+    }
 }
 
 #[cfg(test)]

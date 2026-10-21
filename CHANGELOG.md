@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.3: jar fees feed the SauceHole
+
+`stonksauce` only; `sauce_hole` is unchanged. No account layout changes.
+
+- `buyback_and_feed` replaces `buyback_and_burn`. Jar fees are swapped for STONKSAUCE and the swap pays straight into the SauceHole's STONKSAUCE vault, so the token tax is paid once and nothing is burned.
+- The destination is pinned: `hole` must be the SauceHole PDA (`4Z3tMJTnRuQw7XSqLA1JrcHPAj3mKfL2rLAGcCJrGM7h`, a compiled constant with a unit test against the SauceHole program id), and `hole_vault` must be its associated token account for the configured SAUCE mint.
+- Settlement requires the fee vault to be unchanged in ownership, delegate and close authority, the hole vault to still be owned by the hole, at most `amount_in` spent, and the hole vault to grow by more than 0 and at least `min_out` (`BuybackEmpty`).
+- Only the swap authority signs inside the swap CPI; the crank's signature is no longer forwarded (M-6).
+- `BuybackFed { jar, spent, fed, timestamp }` replaces `BuybackBurned`. The SAUCE vault PDA and the crank's rent payment are gone.
+
+Security: see "2026-10: jar fees feed the SauceHole" in [docs/SECURITY_REVIEW.md](docs/SECURITY_REVIEW.md).
+
+Reproducible build: `solana-verify build --library-name stonksauce --arch v3 --base-image solanafoundation/solana-verifiable-build:4.1.0`, executable hash `756e4f193ae9e62ee8e1f2d6f87b638f9f8278d7af5cb9790e9050af98871554`.
+
 ## v1.2: SauceHole
 
 New program `sauce_hole`, `Ho1ezeQ2fb1zEL3aK94e4q5j7g3vwGfi5PguPWGjB2VC`. The `stonksauce` program is unchanged.

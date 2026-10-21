@@ -101,8 +101,8 @@ pub mod stonksauce {
         instructions::cancel_draw::handler(ctx)
     }
 
-    pub fn buyback_and_burn<'info>(
-        ctx: Context<'_, '_, 'info, 'info, BuybackAndBurn<'info>>,
+    pub fn buyback_and_feed<'info>(
+        ctx: Context<'_, '_, 'info, 'info, BuybackAndFeed<'info>>,
         amount_in: u64,
         min_out: u64,
         swap_data: Vec<u8>,
@@ -426,8 +426,7 @@ pub struct CancelDraw<'info> {
 }
 
 #[derive(Accounts)]
-pub struct BuybackAndBurn<'info> {
-    #[account(mut)]
+pub struct BuybackAndFeed<'info> {
     pub crank: Signer<'info>,
     #[account(seeds = [b"config"], bump = config.bump)]
     pub config: Account<'info, Config>,
@@ -440,20 +439,19 @@ pub struct BuybackAndBurn<'info> {
         token::token_program = quote_token_program
     )]
     pub fee_vault: Box<InterfaceAccount<'info, TokenAccount>>,
-    #[account(mut, address = config.sauce_mint)]
+    #[account(address = config.sauce_mint)]
     pub sauce_mint: Box<InterfaceAccount<'info, Mint>>,
-    /// A PDA rather than the jar's SAUCE ATA: when the stake mint is SAUCE that
-    /// ATA is the stake vault, and burning from it would burn deposits.
+    /// CHECK: the SauceHole's hole PDA; only its address matters.
+    #[account(address = state::SAUCE_HOLE @ SauceError::BuybackViolation)]
+    pub hole: UncheckedAccount<'info>,
+    /// The hole's STONKSAUCE vault, where the swap pays out.
     #[account(
-        init_if_needed,
-        payer = crank,
-        seeds = [b"sauce_vault", jar.stake_mint.as_ref()],
-        bump,
-        token::mint = sauce_mint,
-        token::authority = jar,
-        token::token_program = sauce_token_program
+        mut,
+        associated_token::mint = sauce_mint,
+        associated_token::authority = hole,
+        associated_token::token_program = sauce_token_program
     )]
-    pub sauce_vault: Box<InterfaceAccount<'info, TokenAccount>>,
+    pub hole_vault: Box<InterfaceAccount<'info, TokenAccount>>,
     /// CHECK: signs the swap in place of the jar. It owns nothing and is only
     /// ever a delegate on the fee vault for `amount_in`, revoked after the swap.
     #[account(seeds = [b"swap_authority", jar.stake_mint.as_ref()], bump)]
@@ -463,5 +461,4 @@ pub struct BuybackAndBurn<'info> {
     pub swap_program: UncheckedAccount<'info>,
     pub quote_token_program: Interface<'info, TokenInterface>,
     pub sauce_token_program: Interface<'info, TokenInterface>,
-    pub system_program: Program<'info, System>,
 }

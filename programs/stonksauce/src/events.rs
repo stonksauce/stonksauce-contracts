@@ -43,10 +43,12 @@ pub struct DrawCancelled {
     pub timestamp: i64,
 }
 
+/// Jar fees swapped into the SauceHole. `fed` is the STONKSAUCE that reached
+/// the hole's vault, net of the token tax.
 #[event]
-pub struct BuybackBurned {
+pub struct BuybackFed {
     pub jar: Pubkey,
     pub spent: u64,
-    pub burned: u64,
+    pub fed: u64,
     pub timestamp: i64,
 }

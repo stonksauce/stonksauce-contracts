@@ -35,8 +35,9 @@ Every finding marked Fixed has a regression check in `scripts/localnet/e2e.ts`. 
 | L-7 | Low | Unchecked `occupied` increment | Fixed (hardening) |
 | I-1 to I-6 | Info | Economic and operational risks | Documented |
 | 2026-10 | Change | Switchboard On-Demand replaced by ORAO VRF (supersedes the C-2 and H-3 checks) | Done, localnet regressions pass |
-| M-6 | Medium | Buyback forwards the crank's signature into the swap CPI (found in the SauceHole review, SH-1) | Open; fix in the next stonksauce upgrade |
+| M-6 | Medium | Buyback forwards the crank's signature into the swap CPI (found in the SauceHole review, SH-1) | Fixed in `buyback_and_feed`; ships with that upgrade |
 | SH | Review | `programs/sauce_hole` (the SauceHole), see "2026-10: SauceHole program" | SH-1 fixed; localnet and devnet regressions pass |
+| 2026-10 | Change | Jar fees buy STONKSAUCE for the SauceHole instead of burning it (`buyback_and_feed`), see "2026-10: jar fees feed the SauceHole" | Localnet regressions and mainnet-fork rehearsal pass |
 
 ## Critical
 
@@ -168,6 +169,8 @@ Regression: `rejected as expected: cancel_draw before the timeout (6028)`. The s
 The buyback output account was the jar's associated token account for the SAUCE mint. For a jar that stakes SAUCE (the first planned mainnet jar), that is the stake vault holding depositors' funds. The stake vault was therefore handed to the swap program as a jar-signed writable account.
 
 Fix: buyback output goes to a dedicated PDA token account (`seeds = ["sauce_vault", stake_mint]`, authority jar). The stake vault is in the forbidden list for swap accounts.
+
+Since `buyback_and_feed` (2026-10), the output account is the SauceHole's STONKSAUCE ATA, which is owned by the hole PDA and can never be a jar's stake vault. The SAUCE vault PDA is no longer used. The stake vault stays on the forbidden list.
 
 Regression: `stake vault untouched by buyback` assertion after the successful buyback.
 
@@ -335,7 +338,7 @@ Trust model: under Switchboard the keeper could simulate the reveal, learn the w
 - I-2 Sybil wallets bypass the per-wallet caps. Both `cap_bps` (share of the jar) and `max_deposit` (absolute amount) limit one position, not one person. A cap does not change anyone's expected value, since odds stay proportional to stake; it limits how concentrated a single position looks and how much one wallet can take in a draw. The admin can change either limit with `set_jar_cap` and `set_jar_max_deposit`. New limits apply to later deposits only, so lowering one never locks or seizes an existing position.
 - I-3 StonkFun controls the stake token's transfer fee. The SAUCE transfer-fee config authority (`WLHv2UAZm6z4KyaaELi5pjdbJh6RESMva1Rnn8pJVVh`) can raise the fee up to the Token-2022 maximum. Deposits are credited net of the actual fee received, so accounting stays correct, but withdrawals would pay the higher fee.
 - I-4 Position rent is not reclaimed. A fully withdrawn position account stays open. The rent is roughly 0.0015 SOL per user, per jar.
-- I-5 Mainnet buyback is not yet exercised. The program side of Jupiter routing is ready: pass-through `swap_data`, the whitelisted program, and post-checks. The keeper only implements the `mock_amm` route. The swap authority PDA cannot pay rent for intermediate accounts, so a Jupiter route must be built with `useSharedAccounts` and a pre-created SAUCE vault. The swap authority must be the route's `userTransferAuthority` and acts as a delegate on the fee vault rather than its owner (M-4), so confirm on a mainnet fork that the chosen route accepts a delegated source account (the SauceHole fork rehearsal showed Jupiter `shared_accounts_route` accepts one, SH-I11). It also needs a quote-based `min_out`. Until then, keep fees in the fee vault; they are safe there.
+- I-5 Mainnet buyback routing. Resolved in 2026-10 with `buyback_and_feed`: the keeper buys through Jupiter `shared_accounts_route` with the swap authority as a delegate on the fee vault and the SauceHole's vault as destination, takes `min_out` from the quote, and applies the GetSauced impact and deviation checks (SH-I3). See "2026-10: jar fees feed the SauceHole" (JF-I1 to JF-I4) for what remains.
 - I-6 Keeper liveness and randomness trust. Updated 2026-10 for ORAO VRF. The keeper can delay requesting a draw but cannot pick the winner or see the value before ORAO writes it on-chain. Once it is on-chain anyone can call `fulfill_draw`, and `cancel_draw` refuses a fulfilled draw (`DrawFulfilled`), so an unfavourable result cannot be withheld or re-rolled. Randomness relies on ORAO's quorum of fulfilment authorities, and a colluding quorum could bias results. If the keeper key is lost, rotate it with `set_keeper`; a draw the old key requested still settles once ORAO answers. Under Switchboard (before 2026-10) the keeper could simulate the reveal and withhold until the one-hour cancel, and a pending draw committed by an old key had to time out.
 
 ## Operational requirements that the fixes depend on
@@ -358,7 +361,7 @@ Design: one singleton `Hole` PDA (seed `hole`, `4Z3tMJTnRuQw7XSqLA1JrcHPAj3mKfL2
 
 `get_sauced` built the swap's account metas with `is_signer: key == swap_authority || account.is_signer`, so any outer signer passed in the swap accounts, including the keeper's own wallet, kept its signature inside the swap program. A hostile or compromised swap program could pair a real buy (passing every balance check) with a transfer out of the keeper's wallet. Fix: only the swap authority is ever marked as a signer. The mock AMM and Jupiter shared-accounts routes need no other signer.
 
-The live stonksauce `buyback_and_burn` (`buyback.rs`, line 46) has the same pattern (M-6). It is exploitable only through a swap program the admin whitelisted, and only against the crank's wallet, never the vaults. Apply the same one-line fix in the next stonksauce upgrade.
+The stonksauce `buyback_and_burn` had the same pattern (M-6). It was exploitable only through a swap program the admin whitelisted, and only against the crank's wallet, never the vaults. `buyback_and_feed` applies the same fix.
 
 Regression: the test sets the System program as the swap program and passes a transfer from the crank. On the pre-fix binary the drain executed and the transaction only reverted at settlement (`SwapViolation`). The test now requires the failure to be the System program's missing signature, before settlement, and checks the crank's SOL is unchanged.
 
@@ -428,3 +431,35 @@ Results: `cargo test -p sauce_hole --lib` passes 14 tests (`settle`, account siz
   | Unbounded `HOLE_SLIPPAGE_BPS` collapses `min_out` to 1 (Low) | Valid | Must be an integer from 0 to 500; the Node keeper refuses to start, the Worker turns off only the hole step; a quote that rounds to zero no longer swaps |
   | Permissionless jar creation allows squatting (Low) | Known (H-8); `open_jar_creation` stays off | None |
   | `withdraw` uses `saturating_sub` on totals (Low) | Deliberate: a withdrawal is bounded by `position.amount` (checked) and the vault balance (token program), and reverting on an inconsistent total would lock every other depositor; draws already refuse an inconsistent tree (M-3) | None |
+
+## 2026-10: jar fees feed the SauceHole
+
+Scope: `buyback_and_feed` (`programs/stonksauce/src/instructions/buyback.rs`, the `BuybackAndFeed` context in `lib.rs`), the `SAUCE_HOLE` constants in `state.rs`, `buybackAndFeedIx` in `scripts/lib/client.ts`, and the keeper step `keeper/src/buyback.ts`. It replaces `buyback_and_burn`. The instruction discriminator changed, so an old client fails before any account is read.
+
+The promise under review: fees leave a jar's fee vault only to buy STONKSAUCE that lands in the SauceHole's vault in the same instruction.
+
+What changed from `buyback_and_burn`:
+
+- The destination is pinned. `hole` must equal `state::SAUCE_HOLE`, a compiled constant; the unit test `sauce_hole_is_the_hole_programs_pda` checks it is the SauceHole program's `["hole"]` PDA. `hole_vault` must be that PDA's associated token account for the configured SAUCE mint and token program.
+- Nothing is burned and nothing is created. The SAUCE vault PDA, the `system_program` account and the crank's rent payment are gone, so the crank is no longer writable.
+- Settlement checks that the hole vault is still owned by the hole and grew by more than 0 and at least `min_out` (`BuybackEmpty`). The fee vault checks are unchanged.
+- Only the swap authority is marked as a signer in the swap CPI (M-6).
+
+| Attack | Protection | Regression line |
+| --- | --- | --- |
+| Swap pays the crank's own SAUCE account instead of the hole | The hole vault must grow by at least `min_out` | `buyback whose swap pays someone other than the hole (6021)` |
+| Another SAUCE account passed as the hole vault | Associated token constraint on `hole_vault` | `buyback naming another account as the hole vault (2015)` |
+| Swap spends the crank's wallet with its forwarded signature | M-6 | `swap that spends the crank's own SOL with its forwarded signature (M-6)` |
+
+The earlier buyback guards (C-1, H-2, H-7 and M-4) run unchanged against `buyback_and_feed`: non-keeper (6023), stake vault, reward vault and jar as swap accounts (6030), a delegate or owner change on the fee vault (4), overspending `amount_in` (1), and a swap that pockets `amount_in` (6021). The happy path asserts that the hole vault grew, SAUCE supply did not change, the stake vault was untouched and the fee vault delegation was revoked (`buyback fed the hole <n> SAUCE`).
+
+Results: `cargo test -p stonksauce` passes 29 tests. `pnpm localnet:e2e` passes. `pnpm mainnet:buyback:fork` (2026-10-15) loaded the new binary at the mainnet program id on a fork, planned a Jupiter buy for every jar fee vault worth at least `FORK_MIN_USD`, landed each one into the hole vault, and then ran the keeper's own `maybeJupiterBuyback`, which correctly found nothing left above its minimum.
+
+### Trust model and accepted risks
+
+- JF-I1 The hole vault is a writable account in the swap. The swap authority has no authority over it, so a swap can only add to it, and settlement re-checks its owner. What lands there is locked by the SauceHole program, so the lock depends on that program's upgrade authority (SH-I1).
+- JF-I2 Jar buybacks arrive by plain transfer, like SH-I9. The SauceHole's `total_fed` and `total_bought` counters do not include them; the vault balance, which the hole page shows as locked, and the stonksauce `BuybackFed` events do.
+- JF-I3 Admin and keeper together. A hostile whitelisted swap with `min_out = 1` could keep one buyback's fees and pay 1 raw unit into the hole, the same bound as section 11 of ARCHITECTURE. Deposits, pots and the hole's existing SAUCE are never exposed. Mitigations are unchanged: admin on the multisig, Jupiter v6 only.
+- JF-I4 Proprietary AMMs. On the fork, GoonFi, BisonFi and Obsidian failed because their keeper-updated oracles go stale on a fork; whether they accept a CPI swap on mainnet is unknown. When simulation fails inside one DEX, the keeper re-quotes once without it. `JUPITER_EXCLUDE_DEXES` excludes a label for good.
+- JF-I5 Price. Jar fee vaults hold several quote mints and the STONKSAUCE pools are thin. On the fork the STONKSAUCE quote sat 6% to 9% below Jupiter's Price API, inside the 15% `HOLE_MAX_DEVIATION_BPS` limit. Impact sizing (`HOLE_MAX_IMPACT_BPS`) and the $1 `JAR_BUYBACK_MIN_USD` keep each buy small. Transactions are not sent through Jito.
+- JF-I6 Retired SAUCE vaults. Any `["sauce_vault", stake_mint]` account created by the old instruction on localnet or devnet keeps its balance, and no instruction moves it. No mainnet buyback ever ran, so none exists on mainnet.

@@ -1,19 +1,22 @@
 use crate::error::SauceError;
-use crate::events::BuybackBurned;
-use crate::BuybackAndBurn;
+use crate::events::BuybackFed;
+use crate::BuybackAndFeed;
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
     program::invoke_signed,
 };
-use anchor_spl::token_interface::{self, Approve, Burn, Revoke, TokenAccount};
+use anchor_spl::token_interface::{self, Approve, Revoke, TokenAccount};
 
 /// The jar never signs for the swap program, so the swap cannot touch any
 /// jar-owned account's authority, extensions or other vaults. The jar approves
 /// the swap authority PDA as delegate on the fee vault for exactly `amount_in`,
 /// that PDA signs the swap, and the delegation is revoked afterwards.
+///
+/// The swap pays STONKSAUCE straight into the SauceHole's vault, so the token
+/// tax is paid once, on the swap, rather than again on a second transfer.
 pub fn handler<'info>(
-    ctx: Context<'_, '_, 'info, 'info, BuybackAndBurn<'info>>,
+    ctx: Context<'_, '_, 'info, 'info, BuybackAndFeed<'info>>,
     amount_in: u64,
     min_out: u64,
     swap_data: Vec<u8>,
@@ -41,9 +44,11 @@ pub fn handler<'info>(
             !forbidden.contains(account.key),
             SauceError::ForbiddenSwapAccount
         );
+        // Only the swap authority signs: forwarding the crank's signature
+        // would let the swap program spend from the crank's wallet.
         metas.push(AccountMeta {
             pubkey: account.key(),
-            is_signer: account.key() == swap_authority || account.is_signer,
+            is_signer: account.key() == swap_authority,
             is_writable: account.is_writable,
         });
     }
@@ -51,7 +56,7 @@ pub fn handler<'info>(
     infos.push(ctx.accounts.swap_program.to_account_info());
 
     let fee_before = ctx.accounts.fee_vault.amount;
-    let sauce_before = ctx.accounts.sauce_vault.amount;
+    let hole_before = ctx.accounts.hole_vault.amount;
     let jar_bump = jar.bump;
     let stake_mint = jar.stake_mint;
     let jar_seeds = &[b"jar".as_ref(), stake_mint.as_ref(), &[jar_bump]];
@@ -94,38 +99,26 @@ pub fn handler<'info>(
     ))?;
 
     ctx.accounts.fee_vault.reload()?;
-    ctx.accounts.sauce_vault.reload()?;
+    ctx.accounts.hole_vault.reload()?;
     require_untouched(&ctx.accounts.fee_vault, &jar_key)?;
-    require_untouched(&ctx.accounts.sauce_vault, &jar_key)?;
+    require_keys_eq!(
+        ctx.accounts.hole_vault.owner,
+        ctx.accounts.hole.key(),
+        SauceError::BuybackViolation
+    );
 
     let spent = fee_before
         .checked_sub(ctx.accounts.fee_vault.amount)
         .ok_or(SauceError::BuybackViolation)?;
     require!(spent > 0 && spent <= amount_in, SauceError::BuybackViolation);
-    let bought = ctx
-        .accounts
-        .sauce_vault
-        .amount
-        .saturating_sub(sauce_before);
-    require!(bought > 0 && bought >= min_out, SauceError::BuybackEmpty);
+    // Net of the token tax, which Token-2022 withholds in the hole vault.
+    let fed = ctx.accounts.hole_vault.amount.saturating_sub(hole_before);
+    require!(fed > 0 && fed >= min_out, SauceError::BuybackEmpty);
 
-    token_interface::burn(
-        CpiContext::new_with_signer(
-            ctx.accounts.sauce_token_program.to_account_info(),
-            Burn {
-                mint: ctx.accounts.sauce_mint.to_account_info(),
-                from: ctx.accounts.sauce_vault.to_account_info(),
-                authority: ctx.accounts.jar.to_account_info(),
-            },
-            &[jar_seeds],
-        ),
-        bought,
-    )?;
-
-    emit!(BuybackBurned {
+    emit!(BuybackFed {
         jar: jar_key,
         spent,
-        burned: bought,
+        fed,
         timestamp: Clock::get()?.unix_timestamp,
     });
     Ok(())
